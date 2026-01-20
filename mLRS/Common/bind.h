@@ -10,11 +10,10 @@
 #define BIND_H
 #pragma once
 
-
 #include <stdint.h>
 #include "common_conf.h"
 #include "hal/device_conf.h"
-
+#include "common_types.h"
 
 extern volatile uint32_t millis32(void);
 extern bool connected(void);
@@ -31,16 +30,14 @@ void sxGetPacketStatus(uint8_t antenna, tStats* const stats);
 
 extern tStats stats;
 
-
 //-------------------------------------------------------
 // Bind Class
 //-------------------------------------------------------
 
-#define BIND_SIGNATURE_TX_STR     "mLRS\x01\x02\x03\x04"
-#define BIND_SIGNATURE_RX_STR     "mLRS\x04\x03\x02\x01"
-#define BIND_BUTTON_DEBOUNCE_MS   50
-#define BIND_BUTTON_TMO_MS        4000
-
+#define BIND_SIGNATURE_TX_STR "mLRS\x01\x02\x03\x04"
+#define BIND_SIGNATURE_RX_STR "mLRS\x04\x03\x02\x01"
+#define BIND_BUTTON_DEBOUNCE_MS 50
+#define BIND_BUTTON_TMO_MS 4000
 
 typedef enum {
     BIND_TASK_NONE = 0,
@@ -49,10 +46,8 @@ typedef enum {
     BIND_TASK_TX_RESTART_CONTROLLER,
 } BIND_TASK_ENUM;
 
-
-class tBindBase
-{
-  public:
+class tBindBase {
+   public:
     void Init(void);
     bool IsInBind(void) { return is_in_binding; }
     void StartBind(void) { binding_requested = true; }
@@ -62,18 +57,18 @@ class tBindBase
     void Do(void);
     uint8_t Task(void);
 
-    void AutoBind(void); // only for receiver, call every ms
+    void AutoBind(void);  // only for receiver, call every ms
     uint32_t auto_bind_tmo_ms;
 
-    bool is_in_binding; // is in sync with link loop
+    bool is_in_binding;  // is in sync with link loop
     bool binding_requested;
     bool binding_stop_requested;
     uint32_t button_tlast_ms;
     uint8_t task;
     bool is_connected;
 
-    uint64_t TxSignature; // 8 bytes, signature of Tx module
-    uint64_t RxSignature; // 8 bytes, signature of Rx module
+    uint64_t TxSignature;  // 8 bytes, signature of Tx module
+    uint64_t RxSignature;  // 8 bytes, signature of Rx module
 
     void handle_receive(uint8_t antenna, uint8_t rx_status);
     void do_transmit(uint8_t antenna);
@@ -83,9 +78,7 @@ class tBindBase
     int8_t pressed_cnt;
 };
 
-
-void tBindBase::Init(void)
-{
+void tBindBase::Init(void) {
     is_in_binding = false;
     binding_requested = false;
     binding_stop_requested = false;
@@ -102,9 +95,7 @@ void tBindBase::Init(void)
     auto_bind_tmo_ms = 1000 * RX_BIND_MODE_AFTER_POWERUP_TIME_SEC;
 }
 
-
-void tBindBase::ConfigForBind(void)
-{
+void tBindBase::ConfigForBind(void) {
     // switch to 19 Mode, select lowest possible power
     // we technically have to distinguish between MODE_19HZ or MODE_19HZ_7X
     // configure_mode() however does currently do the same for both cases
@@ -124,24 +115,30 @@ void tBindBase::ConfigForBind(void)
     sx2.SetToIdle();
 }
 
-
 // called each ms
-void tBindBase::Tick_ms(void)
-{
+void tBindBase::Tick_ms(void) {
     // a not so efficient but simple debounce
     if (!is_pressed) {
-        if (button_pressed()) { pressed_cnt++; } else { pressed_cnt = 0; }
-        if (pressed_cnt >= BIND_BUTTON_DEBOUNCE_MS) is_pressed = true;
+        if (button_pressed()) {
+            pressed_cnt++;
+        } else {
+            pressed_cnt = 0;
+        }
+        if (pressed_cnt >= BIND_BUTTON_DEBOUNCE_MS)
+            is_pressed = true;
     } else {
-        if (!button_pressed()) { pressed_cnt--; } else { pressed_cnt = BIND_BUTTON_DEBOUNCE_MS; }
-        if (pressed_cnt <= 0) is_pressed = false;
+        if (!button_pressed()) {
+            pressed_cnt--;
+        } else {
+            pressed_cnt = BIND_BUTTON_DEBOUNCE_MS;
+        }
+        if (pressed_cnt <= 0)
+            is_pressed = false;
     }
 }
 
-
 // called in each doPreTransmit or doPostReceive cycle
-void tBindBase::Do(void)
-{
+void tBindBase::Do(void) {
     uint32_t tnow = millis32();
 
     if (is_pressed) {
@@ -154,7 +151,7 @@ void tBindBase::Do(void)
 
 #ifdef DEVICE_IS_TRANSMITTER
     if (is_in_binding) {
-        if (is_connected && !connected()) { // we just lost connection
+        if (is_connected && !connected()) {  // we just lost connection
             task = BIND_TASK_TX_RESTART_CONTROLLER;
         }
         is_connected = connected();
@@ -168,19 +165,33 @@ void tBindBase::Do(void)
     if (!is_in_binding && binding_requested) {
         is_in_binding = true;
         task = BIND_TASK_CHANGED_TO_BIND;
+#ifdef DEVICE_IS_TRANSMITTER
+        // generate random bind phrase for current config ID when entering bind mode
+        // format: 4 random chars + "." + config_id
+        char random_phrase[6 + 1];
+        for (uint8_t i = 0; i < 4; i++) {
+            uint32_t rnd = millis32() + i * 17;
+            random_phrase[i] = bindphrase_chars[rnd % BINDPHRASE_CHARS_LEN];
+        }
+        random_phrase[4] = '.';
+        random_phrase[5] = '0' + Config.ConfigId; // convert digit to char
+        random_phrase[6] = '\0';
+
+        strcpy(Setup.Common[Config.ConfigId].BindPhrase, random_phrase);
+        setup_store_to_EEPROM(); // immediately save to EEPROM
+#endif
     }
 }
 
-
 // called directly after bind.Do()
-uint8_t tBindBase::Task(void)
-{
+uint8_t tBindBase::Task(void) {
     switch (task) {
-    case BIND_TASK_TX_RESTART_CONTROLLER:
-    case BIND_TASK_RX_STORE_PARAMS:
-        // postpone until button is released, prevents jumping to RESTART while button is till pressed by user
-        if (is_pressed) return BIND_TASK_NONE;
-        break;
+        case BIND_TASK_TX_RESTART_CONTROLLER:
+        case BIND_TASK_RX_STORE_PARAMS:
+            // postpone until button is released, prevents jumping to RESTART while button is till pressed by user
+            if (is_pressed)
+                return BIND_TASK_NONE;
+            break;
     }
 
     uint8_t ret = task;
@@ -188,11 +199,11 @@ uint8_t tBindBase::Task(void)
     return ret;
 }
 
-
-void tBindBase::AutoBind(void) // only for receiver, call every ms
+void tBindBase::AutoBind(void)  // only for receiver, call every ms
 {
 #if defined DEVICE_IS_RECEIVER && defined RX_BIND_MODE_AFTER_POWERUP
-    if (!auto_bind_tmo_ms) return;
+    if (!auto_bind_tmo_ms)
+        return;
 
     auto_bind_tmo_ms--;
 
@@ -202,23 +213,19 @@ void tBindBase::AutoBind(void) // only for receiver, call every ms
 #endif
 }
 
-
 tTxBindFrame txBindFrame;
 tRxBindFrame rxBindFrame;
 
-
 #ifdef DEVICE_IS_TRANSMITTER
 
-void tBindBase::handle_receive(uint8_t antenna, uint8_t rx_status)
-{
-    if (rx_status == RX_STATUS_INVALID) return;
+void tBindBase::handle_receive(uint8_t antenna, uint8_t rx_status) {
+    if (rx_status == RX_STATUS_INVALID)
+        return;
 
     // do stuff
 }
 
-
-void tBindBase::do_transmit(uint8_t antenna)
-{
+void tBindBase::do_transmit(uint8_t antenna) {
     memset((uint8_t*)&txBindFrame, 0, sizeof(txBindFrame));
     txBindFrame.bind_signature = TxSignature;
 
@@ -232,9 +239,7 @@ void tBindBase::do_transmit(uint8_t antenna)
     txBindFrame.crc = fmav_crc_calculate((uint8_t*)&txBindFrame, FRAME_TX_RX_LEN - 2);
 }
 
-
-uint8_t tBindBase::do_receive(uint8_t antenna, bool do_clock_reset)
-{
+uint8_t tBindBase::do_receive(uint8_t antenna, bool do_clock_reset) {
     sxReadFrame(antenna, &rxBindFrame, &rxBindFrame, FRAME_TX_RX_LEN);
 
     bool ok = (rxBindFrame.bind_signature == RxSignature);
@@ -245,7 +250,8 @@ uint8_t tBindBase::do_receive(uint8_t antenna, bool do_clock_reset)
 
     sxGetPacketStatus(antenna, &stats);
 
-    if (ok) return RX_STATUS_VALID;
+    if (ok)
+        return RX_STATUS_VALID;
 
     return RX_STATUS_INVALID;
 }
@@ -253,9 +259,9 @@ uint8_t tBindBase::do_receive(uint8_t antenna, bool do_clock_reset)
 #endif
 #ifdef DEVICE_IS_RECEIVER
 
-void tBindBase::handle_receive(uint8_t antenna, uint8_t rx_status)
-{
-    if (rx_status == RX_STATUS_INVALID) return;
+void tBindBase::handle_receive(uint8_t antenna, uint8_t rx_status) {
+    if (rx_status == RX_STATUS_INVALID)
+        return;
 
     strstrbufcpy(Setup.Common[0].BindPhrase, txBindFrame.BindPhrase_6, 6);
     // TODO Setup.Common[0].FrequencyBand = txBindFrame.FrequencyBand;
@@ -267,9 +273,7 @@ void tBindBase::handle_receive(uint8_t antenna, uint8_t rx_status)
     }
 }
 
-
-void tBindBase::do_transmit(uint8_t antenna)
-{
+void tBindBase::do_transmit(uint8_t antenna) {
     memset((uint8_t*)&rxBindFrame, 0, sizeof(rxBindFrame));
     rxBindFrame.bind_signature = RxSignature;
 
@@ -282,9 +286,7 @@ void tBindBase::do_transmit(uint8_t antenna)
     sxSendFrame(antenna, &rxBindFrame, FRAME_TX_RX_LEN, SEND_FRAME_TMO_MS);
 }
 
-
-uint8_t tBindBase::do_receive(uint8_t antenna, bool do_clock_reset)
-{
+uint8_t tBindBase::do_receive(uint8_t antenna, bool do_clock_reset) {
     sxReadFrame(antenna, &txBindFrame, &txBindFrame, FRAME_TX_RX_LEN);
 
     bool ok = (txBindFrame.bind_signature == TxSignature);
@@ -293,16 +295,17 @@ uint8_t tBindBase::do_receive(uint8_t antenna, bool do_clock_reset)
         ok = (crc == txBindFrame.crc);
     }
 
-    if (ok && do_clock_reset) clock_reset();
+    if (ok && do_clock_reset)
+        clock_reset();
 
     sxGetPacketStatus(antenna, &stats);
 
-    if (ok) return RX_STATUS_VALID;
+    if (ok)
+        return RX_STATUS_VALID;
 
     return RX_STATUS_INVALID;
 }
 
 #endif
 
-
-#endif // BIND_H
+#endif  // BIND_H
