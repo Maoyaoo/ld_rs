@@ -98,6 +98,18 @@ class tSerialPort : public tSerialBase
     char getc(void) override { return dronecan.getc(); }
     void flush(void) override { dronecan.flush(); }
     uint16_t bytes_available(void) override { return dronecan.bytes_available(); }
+#elif defined USE_SERIAL && defined DEVICE_HAS_SERIAL_ON_USB
+    void InitOnce(void) override { usb_init(); }
+    void Init(void) override { uartb_init(); }
+    void SetSerialIsSource(bool _ser) {}
+    void SetBaudRate(uint32_t baud) override { uartb_setprotocol(baud, XUART_PARITY_NO, UART_STOPBIT_1); }
+    bool use_usb(void) { return usb_dtr_is_set(); }
+    void putbuf(uint8_t* const buf, uint16_t len) override { if (use_usb()) usb_putbuf(buf, len); else uartb_putbuf(buf, len); }
+    bool available(void) override { return (use_usb()) ? usb_rx_available() : uartb_rx_available(); }
+    char getc(void) override { return (use_usb()) ? usb_getc() : uartb_getc(); }
+    void flush(void) override { if (use_usb()) usb_flush(); else { uartb_rx_flush(); uartb_tx_flush(); } }
+    uint16_t bytes_available(void) override { return (use_usb()) ? usb_rx_bytesavailable() : uartb_rx_bytesavailable(); }
+    bool has_systemboot(void) override { return uartb_has_systemboot(); }
 #elif defined USE_SERIAL
     void Init(void) override { uartb_init(); }
     void SetSerialIsSource(bool _ser) {}

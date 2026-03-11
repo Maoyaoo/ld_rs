@@ -7,6 +7,8 @@
 // mLRS RX
 //*******************************************************
 
+#if !defined(FIRMWARE_MATEK_MR900_30_G431KB)
+
 
 #define DBG_MAIN(x)
 #define DBG_MAIN_SLIM(x)
@@ -959,3 +961,5 @@ dbg.puts(s8toBCD_s(stats.last_rssi2));*/
     }
 
 }//end of main_loop
+
+#endif // !FIRMWARE_MATEK_MR900_30_G431KB

@@ -16,11 +16,20 @@
 // MATEKSYS mR900-30 STM32G431KB, as receiver
 //-------------------------------------------------------
 
+#ifndef FIRMWARE_MATEK_MR900_30_G431KB
 #define DEVICE_HAS_OUT
+#endif
 #define DEVICE_HAS_FAN_ONOFF
 
 #ifdef MLRS_FEATURE_CAN
 #define DEVICE_HAS_DRONECAN
+#endif
+
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+// unified firmware: expose a config port and USB CDC, disable debug to free pins
+#define DEVICE_HAS_COM
+#define DEVICE_HAS_SERIAL_ON_USB
+#define DEVICE_HAS_NO_DEBUG
 #endif
 
 #include "hal-matek-mr-g431kb-common.h"
@@ -47,6 +56,7 @@
 #define UARTB_USE_RX
 #define UARTB_RXBUFSIZE           RX_SERIAL_RXBUFSIZE // 1024 // 512
 
+#ifndef FIRMWARE_MATEK_MR900_30_G431KB
 #define UART_USE_UART2_PB3PB4 // out pin
 #define UART_BAUD                 100000 // SBus normal baud rate, is being set later anyhow
 #define UART_USE_TX
@@ -54,7 +64,20 @@
 #define UART_USE_TX_ISR
 //#define UART_USE_RX
 //#define UART_RXBUFSIZE            512
+#endif
 
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+// UART2 on PA2/PA3 for config (CLI)
+#define UARTC_USE_UART2_PA2PA3
+#define UARTC_BAUD                TX_COM_BAUDRATE
+#define UARTC_USE_TX
+#define UARTC_TXBUFSIZE           TX_COM_TXBUFSIZE
+#define UARTC_USE_TX_ISR
+#define UARTC_USE_RX
+#define UARTC_RXBUFSIZE           TX_COM_RXBUFSIZE
+#endif
+
+#ifndef FIRMWARE_MATEK_MR900_30_G431KB
 #define UARTF_USE_LPUART1_PA2PA3 // debug
 #define UARTF_BAUD                115200
 #define UARTF_USE_TX
@@ -62,6 +85,7 @@
 #define UARTF_USE_TX_ISR
 //#define UARTF_USE_RX
 //#define UARTF_RXBUFSIZE           512
+#endif
 
 
 //-- SX1: SX12xx & SPI
@@ -69,6 +93,7 @@
 
 //-- Out port
 // this is nasty, UART defines not yet known, but cumbersome to add, so we include the lib
+#ifdef DEVICE_HAS_OUT
 #include "../../../modules/stm32ll-lib/src/stdstm32-uart.h"
 
 void out_init_gpio(void)
@@ -88,6 +113,7 @@ void out_set_inverted(void)
     LL_USART_SetTXPinLevel(UART_UARTx, LL_USART_TXPIN_LEVEL_INVERTED);
     LL_USART_Enable(UART_UARTx);
 }
+#endif
 
 
 //-- Button
@@ -103,4 +129,3 @@ void out_set_inverted(void)
 
 #define POWER_PA_MATEK_MR900_30
 #include "../hal-power-pa.h"
-

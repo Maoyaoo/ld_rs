@@ -17,6 +17,9 @@ import pathlib
 import shutil
 import re
 import sys
+import time
+import struct
+import zlib
 
 
 #-- installation dependent
@@ -78,32 +81,63 @@ def findSTM32CubeIDEGnuTools(search_root):
     return st_dir, gnu_dir
 
 
+def findDirectGccDir():
+    # allow overriding with a direct GNU Arm toolchain path
+    gcc_dir = os.getenv("MLRS_GCC_DIR")
+    if gcc_dir:
+        return gcc_dir
+
+    toolchain_root = os.getenv("ARM_GNU_TOOLCHAIN")
+    if toolchain_root:
+        return os.path.join(toolchain_root, 'bin')
+
+    # common default on Linux (as installed by user)
+    default_dir = os.path.join("/opt", "arm-gnu-toolchain-11.3.rel1-x86_64-arm-none-eabi", "bin")
+    if os.path.exists(default_dir):
+        return default_dir
+
+    return ''
+
+
 ST_DIR,GNU_DIR = '', ''
+DIRECT_GCC_DIR = ''
 
 # do this only when called from main context
 if __name__ == "__main__":
-    st_root = os.path.join("C:/",'ST')
-    if os.name == 'posix': # install paths are os dependent
-        st_root = os.path.join("/opt",'st')
+    DIRECT_GCC_DIR = findDirectGccDir()
 
-    ST_DIR,GNU_DIR = findSTM32CubeIDEGnuTools(st_root)
-    if os.getenv("MLRS_ST_DIR"):
-        ST_DIR = os.getenv("MLRS_ST_DIR")
-    if os.getenv("MLRS_GNU_DIR"):
-        GNU_DIR = os.getenv("MLRS_GNU_DIR")
+    if DIRECT_GCC_DIR != '':
+        if not os.path.exists(DIRECT_GCC_DIR):
+            print('ERROR: gnu-tools not found in:', DIRECT_GCC_DIR)
+            exit(1)
+        print('arm-none-eabi gcc found in:', DIRECT_GCC_DIR)
+        print('------------------------------------------------------------')
+    else:
+        st_root = os.path.join("C:/",'ST')
+        if os.name == 'posix': # install paths are os dependent
+            st_root = os.path.join("/opt",'st')
 
-    if ST_DIR == '' or GNU_DIR == '' or not os.path.exists(os.path.join(ST_DIR,GNU_DIR)):
-        print('ERROR: gnu-tools not found!')
-        exit(1)
+        ST_DIR,GNU_DIR = findSTM32CubeIDEGnuTools(st_root)
+        if os.getenv("MLRS_ST_DIR"):
+            ST_DIR = os.getenv("MLRS_ST_DIR")
+        if os.getenv("MLRS_GNU_DIR"):
+            GNU_DIR = os.getenv("MLRS_GNU_DIR")
 
-    print('STM32CubeIDE found in:', ST_DIR)
-    print('gnu-tools found in:', GNU_DIR)
-    print('------------------------------------------------------------')
+        if ST_DIR == '' or GNU_DIR == '' or not os.path.exists(os.path.join(ST_DIR,GNU_DIR)):
+            print('ERROR: gnu-tools not found!')
+            exit(1)
+
+        print('STM32CubeIDE found in:', ST_DIR)
+        print('gnu-tools found in:', GNU_DIR)
+        print('------------------------------------------------------------')
 
 
 #-- GCC preliminaries
 
-GCC_DIR = os.path.join(ST_DIR,GNU_DIR,'tools','bin')
+if DIRECT_GCC_DIR != '':
+    GCC_DIR = DIRECT_GCC_DIR
+else:
+    GCC_DIR = os.path.join(ST_DIR,GNU_DIR,'tools','bin')
 
 # we need to modify the PATH so that the correct toolchain/compiler is used
 # why does sys.path.insert(0,xxx) not work?
@@ -156,6 +190,7 @@ def mlrs_set_branch_hash(version_str):
     import subprocess
 
     git_branch = subprocess.getoutput("git branch --show-current")
+    git_branch = git_branch.replace('/', '_')
     if not git_branch == 'main':
         BRANCHSTR = '-'+git_branch
     if BRANCHSTR != '':
@@ -204,6 +239,50 @@ def printWarning(txt):
 
 def printError(txt):
     print('\033[91m'+txt+'\033[0m') # light Red
+
+
+def mlrs_make_dfu_from_bin(bin_path, dfu_path, address, target_name):
+    with open(bin_path, 'rb') as f:
+        data = f.read()
+
+    # DfuSe prefix
+    prefix_signature = b'DfuSe'
+    prefix_version = b'\x01'
+    targets = 1
+
+    # Target prefix
+    target_signature = b'Target'
+    alt_setting = 0
+    target_named = 1
+    name_bytes = target_name.encode('ascii', errors='ignore')[:255]
+    name_padded = name_bytes + b'\x00' * (255 - len(name_bytes))
+
+    element = struct.pack('<II', address, len(data)) + data
+    target_size = len(element)
+    num_elements = 1
+    target_prefix = (
+        target_signature +
+        struct.pack('<B', alt_setting) +
+        struct.pack('<I', target_named) +
+        name_padded +
+        struct.pack('<II', target_size, num_elements)
+    )
+
+    # DFU suffix (without CRC)
+    bcd_device = 0x0000
+    id_product = 0xDF11
+    id_vendor = 0x0483
+    bcd_dfu = 0x011A
+    suffix = struct.pack('<HHHH', bcd_device, id_product, id_vendor, bcd_dfu) + b'UFD' + struct.pack('<B', 16)
+
+    image_size = len(target_prefix) + len(element) + 16  # suffix length includes CRC
+    prefix = prefix_signature + prefix_version + struct.pack('<I', image_size) + struct.pack('<B', targets)
+
+    crc = zlib.crc32(prefix + target_prefix + element + suffix) & 0xFFFFFFFF
+    dfu = prefix + target_prefix + element + suffix + struct.pack('<I', crc)
+
+    with open(dfu_path, 'wb') as f:
+        f.write(dfu)
 
 
 #--------------------------------------------------
@@ -473,16 +552,21 @@ MLRS_SOURCES_COMMON = [
     ]
 
 #add Common/dronecan/out/src/*.c if they exists # TODO: add a function to include them all
-MLRS_SOURCES_COMMON.append(os.path.join('Common','dronecan','out','src','dronecan.sensors.rc.RCInput.c'))
-MLRS_SOURCES_COMMON.append(os.path.join('Common','dronecan','out','src','uavcan.protocol.dynamic_node_id.Allocation.c'))
-MLRS_SOURCES_COMMON.append(os.path.join('Common','dronecan','out','src','uavcan.protocol.GetNodeInfo_req.c'))
-MLRS_SOURCES_COMMON.append(os.path.join('Common','dronecan','out','src','uavcan.protocol.GetNodeInfo_res.c'))
-MLRS_SOURCES_COMMON.append(os.path.join('Common','dronecan','out','src','uavcan.protocol.HardwareVersion.c'))
-MLRS_SOURCES_COMMON.append(os.path.join('Common','dronecan','out','src','uavcan.protocol.NodeStatus.c'))
-MLRS_SOURCES_COMMON.append(os.path.join('Common','dronecan','out','src','uavcan.protocol.SoftwareVersion.c'))
-MLRS_SOURCES_COMMON.append(os.path.join('Common','dronecan','out','src','uavcan.tunnel.Protocol.c'))
-MLRS_SOURCES_COMMON.append(os.path.join('Common','dronecan','out','src','uavcan.tunnel.Targetted.c'))
-MLRS_SOURCES_COMMON.append(os.path.join('Common','dronecan','out','src','dronecan.protocol.FlexDebug.c'))
+_dronecan_sources = [
+    os.path.join('Common','dronecan','out','src','dronecan.sensors.rc.RCInput.c'),
+    os.path.join('Common','dronecan','out','src','uavcan.protocol.dynamic_node_id.Allocation.c'),
+    os.path.join('Common','dronecan','out','src','uavcan.protocol.GetNodeInfo_req.c'),
+    os.path.join('Common','dronecan','out','src','uavcan.protocol.GetNodeInfo_res.c'),
+    os.path.join('Common','dronecan','out','src','uavcan.protocol.HardwareVersion.c'),
+    os.path.join('Common','dronecan','out','src','uavcan.protocol.NodeStatus.c'),
+    os.path.join('Common','dronecan','out','src','uavcan.protocol.SoftwareVersion.c'),
+    os.path.join('Common','dronecan','out','src','uavcan.tunnel.Protocol.c'),
+    os.path.join('Common','dronecan','out','src','uavcan.tunnel.Targetted.c'),
+    os.path.join('Common','dronecan','out','src','dronecan.protocol.FlexDebug.c'),
+]
+for _src in _dronecan_sources:
+    if os.path.exists(os.path.join(MLRS_DIR, _src)):
+        MLRS_SOURCES_COMMON.append(_src)
 
 MLRS_SOURCES_RX = [
     os.path.join('CommonRx','mlrs-rx.cpp'),
@@ -494,6 +578,10 @@ MLRS_SOURCES_TX = [
     os.path.join('CommonTx','in.cpp'),
     os.path.join('CommonTx','mlrs-tx.cpp'),
     ]
+
+MLRS_SOURCES_FIRMWARE = [
+    os.path.join('CommonRx','mlrs-trx.cpp'),
+]
 
 
 MLRS_SOURCES_USB = [
@@ -554,12 +642,16 @@ class cTarget:
         self.rx_or_tx = ''
         self.is_rx = False
         self.is_tx = False
+        self.is_firmware = False
         if target[:3] == 'rx-' and target_D[:3] == 'RX_':
             self.rx_or_tx = 'rx'
             self.is_rx = True
         elif target[:3] == 'tx-' and target_D[:3] == 'TX_':
             self.rx_or_tx = 'tx'
             self.is_tx = True
+        elif target.startswith('firmware-') and target_D.startswith('FIRMWARE_'):
+            self.rx_or_tx = 'firmware'
+            self.is_firmware = True
         else:
             printError('gkgkggjkgjkgjkgjgjgjgjg')
             exit(1)
@@ -757,6 +849,10 @@ def mlrs_build_target(target, cmdline_D_list):
     if cmdline_D_list != []:
         #target.extra_D_list = cmdline_D_list
         target.extra_D_list += cmdline_D_list
+    if target.target == 'firmware-matek-mr900-30-g431kb':
+        if not any(d.startswith('FIRMWARE_DEFAULTS_REV=') for d in target.extra_D_list):
+            defaults_rev = int(time.time()) & 0xFFFFFFFF
+            target.extra_D_list.append(f'FIRMWARE_DEFAULTS_REV={defaults_rev}')
     print('------------------------------------------------------------')
     print('target', target.target, target.extra_D_list)
 
@@ -793,6 +889,8 @@ def mlrs_build_target(target, cmdline_D_list):
         MLRS_SOURCES_RXTX = MLRS_SOURCES_RX
     elif target.rx_or_tx == 'tx':
         MLRS_SOURCES_RXTX = MLRS_SOURCES_TX
+    elif target.rx_or_tx == 'firmware':
+        MLRS_SOURCES_RXTX = MLRS_SOURCES_FIRMWARE
     else:
         printError('akdfkahsfkuhafkhasfkdh')
         exit(1)
@@ -816,6 +914,15 @@ def mlrs_build_target(target, cmdline_D_list):
             os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.elf') + ' ' +
             os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.hex')
         )
+        os.system(
+            os.path.join(GCC_DIR,'arm-none-eabi-objcopy') + ' -O binary ' +
+            os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.elf') + ' ' +
+            os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.bin')
+        )
+        if target.target == 'firmware-matek-mr900-30-g431kb':
+            bin_path = os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.bin')
+            dfu_path = os.path.join(MLRS_BUILD_DIR,target.build_dir,target.elf_name+'.dfu')
+            mlrs_make_dfu_from_bin(bin_path, dfu_path, 0x08000000, 'Matek mR900-30')
 
     print('------------------------------------------------------------')
 
@@ -998,6 +1105,9 @@ TLIST = [
 #-- MatekSys mLRS devices
         'target' : 'rx-matek-mr24-30-g431kb',           'target_D' : 'RX_MATEK_MR24_30_G431KB',
         'extra_D_list' : [], 'appendix' : '',
+    },{
+        'target' : 'firmware-matek-mr900-30-g431kb',    'target_D' : 'FIRMWARE_MATEK_MR900_30_G431KB',
+        'extra_D_list' : ['STDSTM32_USE_USB'], 'appendix' : '',
     },{
         'target' : 'rx-matek-mr900-30-g431kb',          'target_D' : 'RX_MATEK_MR900_30_G431KB',
         'extra_D_list' : [], 'appendix' : '',
@@ -1299,16 +1409,15 @@ def mlrs_create_targetlist(appendix, extra_D_list):
 
 
 def mlrs_copy_all_hex_etc():
-    print('copying .hex files')
+    print('copying .hex/.bin/.dfu files')
     firmwarepath = os.path.join(MLRS_BUILD_DIR,'firmware')
     create_clean_dir(firmwarepath)
     for path, subdirs, files in os.walk(MLRS_BUILD_DIR):
         for file in files:
             if 'firmware' in path:
                 continue
-            if os.path.splitext(file)[1] == '.hex':
-                shutil.copy(os.path.join(path,file), os.path.join(firmwarepath,file))
-            if os.path.splitext(file)[1] == '.elrs':
+            ext = os.path.splitext(file)[1]
+            if ext in ['.hex', '.elrs', '.bin', '.dfu']:
                 shutil.copy(os.path.join(path,file), os.path.join(firmwarepath,file))
 
 

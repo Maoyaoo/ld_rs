@@ -252,7 +252,7 @@ def do_for_each_target(clean=False, silent=False, target_folder='', usb=False):
         if (((target_folder == '') or
              (target_folder[0] != '!' and target_folder in f) or
              (target_folder[0] == '!' and not target_folder[1:] in f)) and 
-             (f[:3] == "rx-" or f[:3] == "tx-")):
+             (f[:3] == "rx-" or f[:3] == "tx-" or f.startswith("firmware-"))):
 
             print('#############################')
             print('*', f)

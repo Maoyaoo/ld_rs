@@ -113,6 +113,10 @@ Note: Some "high-level" features are set for each device in the device_conf.h fi
 #include "matek/tx-hal-matek-mr900-30-g431kb.h"
 #endif
 
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+#include "matek/rx-hal-matek-mr900-30-g431kb.h"
+#endif
+
 #ifdef RX_MATEK_MR900_22_WLE5CC
 #include "matek/rx-hal-matek-mr900-22-wle5cc.h"
 #endif
@@ -284,6 +288,12 @@ Note: Some "high-level" features are set for each device in the device_conf.h fi
 #else
   #if !defined DEVICE_HAS_NO_SERIAL
     #define USE_SERIAL
+  #endif
+  #if defined DEVICE_HAS_SERIAL_ON_USB
+    #define USE_USB
+  #endif
+  #if defined DEVICE_HAS_COM
+    #define USE_COM
   #endif
   #if defined DEBUG_ENABLED && !defined DEVICE_HAS_NO_DEBUG
     #define USE_DEBUG

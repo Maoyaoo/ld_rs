@@ -150,6 +150,37 @@ char s[64];
 }
 
 
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+// In transparent firmware, hide/lock non-transparent parameters in CLI.
+static bool cli_param_is_hidden(uint8_t param_idx)
+{
+    if (setup_param_is_tx(param_idx)) return true;
+
+    void* ptr = SetupParameter[param_idx].ptr;
+    if (ptr == &Setup.Rx.ChannelOrder) return true;
+    if (ptr == &Setup.Rx.OutMode) return true;
+    if (ptr == &Setup.Rx.OutRssiChannelMode) return true;
+    if (ptr == &Setup.Rx.OutLqChannelMode) return true;
+    if (ptr == &Setup.Rx.FailsafeMode) return true;
+    if (ptr == &Setup.Rx.SerialLinkMode) return true;
+    if (ptr == &Setup.Rx.SendRadioStatus) return true;
+    if (ptr == &Setup.Rx.SendRcChannels) return true;
+    if (ptr == &Setup.Rx.PowerSwitchChannel) return true;
+    if (ptr == &Setup.Rx.SerialPort) return true;
+
+    uintptr_t p = (uintptr_t)ptr;
+    uintptr_t fs1 = (uintptr_t)&Setup.Rx.FailsafeOutChannelValues_Ch1_Ch12[0];
+    uintptr_t fs1_end = fs1 + sizeof(Setup.Rx.FailsafeOutChannelValues_Ch1_Ch12);
+    if (p >= fs1 && p < fs1_end) return true;
+    uintptr_t fs2 = (uintptr_t)&Setup.Rx.FailsafeOutChannelValues_Ch13_Ch16[0];
+    uintptr_t fs2_end = fs2 + sizeof(Setup.Rx.FailsafeOutChannelValues_Ch13_Ch16);
+    if (p >= fs2 && p < fs2_end) return true;
+
+    return false;
+}
+#endif
+
+
 // helper, gets parameter value as formatted string, different formats can be specified
 bool param_get_val_formattedstr(char* const s, uint8_t param_idx, uint8_t format = PARAM_FORMAT_DEFAULT)
 {
@@ -573,6 +604,10 @@ void tTxCli::print_param_list_do(void)
         uint8_t param_index = print_index;
         print_index++;
 
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+        if (cli_param_is_hidden(param_index)) continue;
+#endif
+
         if ((print_pl_flag == 1) && (setup_param_is_tx(param_index) || setup_param_is_rx(param_index))) continue;
         if ((print_pl_flag == 2) && !setup_param_is_tx(param_index)) continue;
         if ((print_pl_flag == 3) && !setup_param_is_rx(param_index)) continue;
@@ -774,6 +809,10 @@ bool rx_param_changed;
         if (is_cmd_param_set(sname, svalue)) { // p name, p name = value
             if (!param_get_idx_fromname(&param_idx, sname)) {
                 putsn("err: invalid parameter name");
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+            } else if (cli_param_is_hidden(param_idx)) {
+                putsn("err: parameter locked in transparent firmware");
+#endif
             } else if (!connected() && setup_param_is_rx(param_idx)) {
                 putsn("warn: receiver not connected");
             } else if (svalue[0] == '?') {
@@ -804,7 +843,11 @@ bool rx_param_changed;
         } else
         if (is_cmd("bind")) {
             tasks.SetCliTask(MAIN_TASK_BIND_START);
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+            putsn("  Entered pairing mode");
+#else
             putsn("  Tx entered bind mode");
+#endif
 
         } else
         if (is_cmd("reload")) {
@@ -889,6 +932,3 @@ bool rx_param_changed;
 
 
 #endif // TX_CLI_H
-
-
-

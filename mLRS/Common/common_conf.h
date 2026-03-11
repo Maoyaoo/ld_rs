@@ -10,6 +10,11 @@
 #define COMMON_CONFIG_H
 #pragma once
 
+#ifndef FASTMAVLINK_CRC_LOOKUP_TABLE
+#define FASTMAVLINK_CRC_LOOKUP_TABLE
+#endif
+#include "../modules/fastmavlink/c_library/lib/fastmavlink_crc.h"
+
 #define VERSION 10307  // leading zero makes it octal!
 #define VERSIONONLYSTR "v1.3.07"
 #define SETUPLAYOUT 10304  // this should be changed then Setup struct and/or serial changes
@@ -74,6 +79,12 @@
 
 #define SETUP_RX_SERIAL_LINK_MODE 2  // 0: 透明传输, 1: mavlink, 2: mavlinkX, 3: mspX
 
+// 统一固件默认强制透明串口
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+#undef SETUP_RX_SERIAL_LINK_MODE
+#define SETUP_RX_SERIAL_LINK_MODE 0
+#endif
+
 #define SETUP_RX_SEND_RADIO_STATUS 1  // 0: 关闭, 1: ardu_1, 2: px4 (也叫 "brad")
 #define SETUP_RX_SEND_RC_CHANNELS 0   // 0: 关闭, 1: RC_CHANNEL_OVERRIDE, 2: RC_CHANNELS
 
@@ -90,6 +101,19 @@
 #define SETUP_RF_BAND SETUP_FREQUENCY_BAND_868_MHZ  // 这是我个人的偏好 :)
 
 #define SETUP_RF_ORTHO 0  // 0: 关闭, 1: 1/3, 2: 2/3, 3: 3/3
+
+// 统一透明固件：默认 915 MHz / 19 Hz / 1 W
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+#undef CPOWER
+#define CPOWER 4 // RFPOWER_LIST index for 30 dBm (1 W) on mR900-30
+#undef SETUP_MODE
+#define SETUP_MODE MODE_19HZ
+#undef SETUP_RF_BAND
+#define SETUP_RF_BAND SETUP_FREQUENCY_BAND_915_MHZ_FCC
+#ifndef FIRMWARE_DEFAULTS_REV
+#define FIRMWARE_DEFAULTS_REV 1
+#endif
+#endif
 
 //-------------------------------------------------------
 // 系统配置

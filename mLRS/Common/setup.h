@@ -531,8 +531,20 @@ void setup_sanitize_config(uint8_t config_id) {
     Setup.Rx.__Buzzer = 0xFF;
     Setup.Rx.__RadioStatusMethod = 0xFF;
 
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+    uint8_t fw_defaults_rev_b0 = Setup.spare[0];
+    uint8_t fw_defaults_rev_b1 = Setup.spare[1];
+    uint8_t fw_defaults_rev_b2 = Setup.spare[2];
+    uint8_t fw_defaults_rev_b3 = Setup.spare[3];
+#endif
     for (uint8_t n = 0; n < sizeof(Setup.spare) / sizeof(Setup.spare[0]); n++)
         Setup.spare[n] = 0xFF;
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+    Setup.spare[0] = fw_defaults_rev_b0;
+    Setup.spare[1] = fw_defaults_rev_b1;
+    Setup.spare[2] = fw_defaults_rev_b2;
+    Setup.spare[3] = fw_defaults_rev_b3;
+#endif
     for (uint8_t n = 0; n < sizeof(Setup.Common[config_id].spare) / sizeof(Setup.Common[config_id].spare[0]); n++)
         Setup.Common[config_id].spare[n] = 0xFF;
     for (uint8_t n = 0; n < sizeof(Setup.Tx[config_id].spare) / sizeof(Setup.Tx[config_id].spare[0]); n++)
@@ -1010,6 +1022,25 @@ void setup_reload(void) {
 void setup_init(void) {
     EE_STATUS_ENUM ee_status;
     bool doEEPROMwrite;
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+    bool fw_force_defaults = false;
+#ifndef FIRMWARE_DEFAULTS_REV
+#define FIRMWARE_DEFAULTS_REV 1
+#endif
+    uint32_t fw_defaults_rev = (uint32_t)FIRMWARE_DEFAULTS_REV;
+    auto fw_defaults_rev_read = [](void) -> uint32_t {
+        return (uint32_t)Setup.spare[0] |
+               ((uint32_t)Setup.spare[1] << 8) |
+               ((uint32_t)Setup.spare[2] << 16) |
+               ((uint32_t)Setup.spare[3] << 24);
+    };
+    auto fw_defaults_rev_write = [](uint32_t v) {
+        Setup.spare[0] = (uint8_t)(v & 0xFF);
+        Setup.spare[1] = (uint8_t)((v >> 8) & 0xFF);
+        Setup.spare[2] = (uint8_t)((v >> 16) & 0xFF);
+        Setup.spare[3] = (uint8_t)((v >> 24) & 0xFF);
+    };
+#endif
 
     setup_clear();          // 1. 先清空内存中的配置
     ee_status = ee_init();  // 2. 初始化EEPROM驱动
@@ -1034,6 +1065,13 @@ void setup_init(void) {
 
 #ifdef SETUP_FORCE_COMMON_CONF
     setup_clear();  // force default
+#endif
+
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+    fw_force_defaults = (fw_defaults_rev_read() != fw_defaults_rev);
+    if (fw_force_defaults) {
+        setup_clear();  // force default on new firmware/defaults revision
+    }
 #endif
 
     doEEPROMwrite = false;
@@ -1062,6 +1100,12 @@ void setup_init(void) {
         strbufstrcpy((char*)Setup.MarkerEnd, SETUP_MARKEREND_STR, 8);
         doEEPROMwrite = true;
     }
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+    if (fw_defaults_rev_read() != fw_defaults_rev) {
+        fw_defaults_rev_write(fw_defaults_rev);
+        doEEPROMwrite = true;
+    }
+#endif
     if (doEEPROMwrite) {
         setup_store_to_EEPROM();
     }
