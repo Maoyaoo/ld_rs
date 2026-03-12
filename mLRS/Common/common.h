@@ -103,12 +103,23 @@ class tSerialPort : public tSerialBase
     void Init(void) override { uartb_init(); }
     void SetSerialIsSource(bool _ser) {}
     void SetBaudRate(uint32_t baud) override { uartb_setprotocol(baud, XUART_PARITY_NO, UART_STOPBIT_1); }
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+    // Unified mR900-30 transparent firmware:
+    // do not gate serial data path by DTR; accept data from USB/UART1 and mirror to both.
+    bool use_usb(void) { return usb_dtr_is_set(); }
+    void putbuf(uint8_t* const buf, uint16_t len) override { usb_putbuf(buf, len); uartb_putbuf(buf, len); }
+    bool available(void) override { return usb_rx_available() || uartb_rx_available(); }
+    char getc(void) override { return (usb_rx_available()) ? usb_getc() : uartb_getc(); }
+    void flush(void) override { usb_flush(); uartb_rx_flush(); uartb_tx_flush(); }
+    uint16_t bytes_available(void) override { return usb_rx_bytesavailable() + uartb_rx_bytesavailable(); }
+#else
     bool use_usb(void) { return usb_dtr_is_set(); }
     void putbuf(uint8_t* const buf, uint16_t len) override { if (use_usb()) usb_putbuf(buf, len); else uartb_putbuf(buf, len); }
     bool available(void) override { return (use_usb()) ? usb_rx_available() : uartb_rx_available(); }
     char getc(void) override { return (use_usb()) ? usb_getc() : uartb_getc(); }
     void flush(void) override { if (use_usb()) usb_flush(); else { uartb_rx_flush(); uartb_tx_flush(); } }
     uint16_t bytes_available(void) override { return (use_usb()) ? usb_rx_bytesavailable() : uartb_rx_bytesavailable(); }
+#endif
     bool has_systemboot(void) override { return uartb_has_systemboot(); }
 #elif defined USE_SERIAL
     void Init(void) override { uartb_init(); }

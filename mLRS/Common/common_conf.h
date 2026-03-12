@@ -91,7 +91,7 @@
 #define SETUP_RX_OUT_RSSI_CHANNEL 0  // 0: 关闭, 5: CH5, 16: CH16
 #define SETUP_RX_OUT_LQ_CHANNEL 0    // 0: 关闭, 5: CH5, 16: CH16
 
-#define BIND_PHRASE "mlrs.0"  // 6字符字符串，允许使用 'a'-'z','0'-'9','_','-','#','.'
+#define BIND_PHRASE "ldrs.0"  // 6字符字符串，允许使用 'a'-'z','0'-'9','_','-','#','.'
 
 #define SETUP_MODE MODE_50HZ
 // #define SETUP_MODE                      MODE_31HZ

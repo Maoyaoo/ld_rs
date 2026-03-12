@@ -27,6 +27,21 @@ extern tSetup Setup;
 extern tGlobalConfig Config;
 extern tTxInfo info;
 extern tTasks tasks;
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+extern uint8_t trx_dbg_role;
+extern uint8_t trx_dbg_pairing;
+extern uint32_t trx_dbg_tx_done_hits;
+extern uint32_t trx_dbg_rx_done_hits;
+extern uint32_t trx_dbg_tx_timeouts;
+extern uint32_t trx_dbg_rx_timeouts;
+extern uint32_t trx_dbg_role_switches;
+extern uint32_t trx_dbg_ser_in_bytes;
+extern uint32_t trx_dbg_ser_out_bytes;
+extern uint16_t trx_dbg_last_irq;
+extern uint8_t trx_dbg_last_status;
+extern uint16_t trx_dbg_last_deverr;
+extern uint16_t trx_dbg_send_tmo_ms;
+#endif
 
 
 //-------------------------------------------------------
@@ -649,6 +664,34 @@ void tTxCli::stream(void)
             puts(u16toBCD_s(stats.bytes_transmitted.GetBytesPerSec()));
             puts(", ");
             puts(u16toBCD_s(stats.bytes_received.GetBytesPerSec()));
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+            puts("; role=");
+            puts((trx_dbg_role == 0) ? "M" : "S");
+            puts(",pair=");
+            puts((trx_dbg_pairing) ? "1" : "0");
+            puts(",txd=");
+            puts(u32toBCD_s(trx_dbg_tx_done_hits));
+            puts(",rxd=");
+            puts(u32toBCD_s(trx_dbg_rx_done_hits));
+            puts(",txtmo=");
+            puts(u32toBCD_s(trx_dbg_tx_timeouts));
+            puts(",rxtmo=");
+            puts(u32toBCD_s(trx_dbg_rx_timeouts));
+            puts(",rsw=");
+            puts(u32toBCD_s(trx_dbg_role_switches));
+            puts(",sin=");
+            puts(u32toBCD_s(trx_dbg_ser_in_bytes));
+            puts(",sout=");
+            puts(u32toBCD_s(trx_dbg_ser_out_bytes));
+            puts(",irq=");
+            puts(u16toHEX_s(trx_dbg_last_irq));
+            puts(",st=");
+            puts(u8toHEX_s(trx_dbg_last_status));
+            puts(",de=");
+            puts(u16toHEX_s(trx_dbg_last_deverr));
+            puts(",tmo=");
+            puts(u16toBCD_s(trx_dbg_send_tmo_ms));
+#endif
             putsn(";");
         }
     }

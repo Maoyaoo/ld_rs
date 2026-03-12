@@ -16,6 +16,15 @@
 // #define SX_USE_REGULATOR_MODE_DCDC
 // #define SX2_USE_REGULATOR_MODE_DCDC
 //*******************************************************
+#if defined(FIRMWARE_MATEK_MR900_30_G431KB)
+#ifndef SX_USE_CRYSTALOSCILLATOR
+#define SX_USE_CRYSTALOSCILLATOR
+#endif
+#ifndef SX2_USE_CRYSTALOSCILLATOR
+#define SX2_USE_CRYSTALOSCILLATOR
+#endif
+#endif
+
 #ifndef SX126X_DRIVER_H
 #define SX126X_DRIVER_H
 #pragma once
@@ -212,7 +221,39 @@ class Sx126xDriverCommon : public Sx126xDriverBase
 
         // set DIO3 as TCXO control
         if (osc_configuration != SX12xx_OSCILLATOR_CONFIG_CRYSTAL) {
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+            // Some mR900-30 modules show XOSC_START_ERR with 1.8 V TCXO drive.
+            // Try a few TCXO voltages and verify XOSC standby mode, then fall back to crystal mode.
+            const uint8_t tcxo_try_list[] = {
+                SX12xx_OSCILLATOR_CONFIG_TCXO_1P8_V,
+                SX12xx_OSCILLATOR_CONFIG_TCXO_2P4_V,
+                SX12xx_OSCILLATOR_CONFIG_TCXO_2P7_V,
+                SX12xx_OSCILLATOR_CONFIG_TCXO_3P0_V,
+                SX12xx_OSCILLATOR_CONFIG_TCXO_3P3_V,
+            };
+            bool xosc_ok = false;
+            for (uint8_t i = 0; i < sizeof(tcxo_try_list) / sizeof(tcxo_try_list[0]); i++) {
+                uint8_t osc_try = tcxo_try_list[i];
+                ClearDeviceError();
+                SetDio3AsTcxoControl(osc_try, 5000);
+                SetStandby(SX126X_STDBY_CONFIG_STDBY_XOSC);
+
+                uint8_t st = GetStatus();
+                uint16_t de = GetDeviceError();
+                if (((st & SX126X_STATUS_MODE_MASK) == SX126X_STATUS_MODE_STDBY_XOSC) &&
+                    ((de & 0x0020U) == 0)) {
+                    osc_configuration = osc_try;
+                    xosc_ok = true;
+                    break;
+                }
+            }
+            ClearDeviceError();
+            if (!xosc_ok) {
+                osc_configuration = SX12xx_OSCILLATOR_CONFIG_CRYSTAL;
+            }
+#else
             SetDio3AsTcxoControl(osc_configuration, 250); // set output to 1.6V-3.3V, ask specification of TCXO to maker board
+#endif
         }
 
         // Image calibration per datasheet 9.2.1
@@ -460,6 +501,11 @@ class Sx126xDriver : public Sx126xDriverCommon
     {
         Sx126xDriverCommon::Init();
 #ifdef SX_USE_CRYSTALOSCILLATOR
+        osc_configuration = SX12xx_OSCILLATOR_CONFIG_CRYSTAL;
+#endif
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+        // Unified mR900-30 firmware: force crystal path and skip DIO3 TCXO control.
+        // This avoids XOSC_START_ERR / command-failure lockups seen on field units.
         osc_configuration = SX12xx_OSCILLATOR_CONFIG_CRYSTAL;
 #endif
 

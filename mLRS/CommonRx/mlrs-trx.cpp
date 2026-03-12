@@ -76,10 +76,30 @@ typedef enum {
 
 static TRX_ROLE_ENUM trx_role = TRX_ROLE_MASTER;
 
+uint8_t trx_dbg_role = TRX_ROLE_MASTER;
+uint8_t trx_dbg_pairing = 0;
+uint32_t trx_dbg_tx_done_hits = 0;
+uint32_t trx_dbg_rx_done_hits = 0;
+uint32_t trx_dbg_tx_timeouts = 0;
+uint32_t trx_dbg_rx_timeouts = 0;
+uint32_t trx_dbg_role_switches = 0;
+uint32_t trx_dbg_ser_in_bytes = 0;
+uint32_t trx_dbg_ser_out_bytes = 0;
+uint16_t trx_dbg_last_irq = 0;
+uint8_t trx_dbg_last_status = 0;
+uint16_t trx_dbg_last_deverr = 0;
+uint16_t trx_dbg_send_tmo_ms = 0;
+
 // Pairing (random bind phrase exchange)
-#define TRX_PAIRING_PHRASE        "pair.0"
+#define TRX_PAIRING_PHRASE        "ldrs.0"
 #define TRX_PAIRING_TIMEOUT_MS    180000U
 #define TRX_PAIRING_MAGIC         0x52494150UL  // 'PAIR'
+#define TRX_DISCOVERY_MAGIC       0x4D4C5253UL  // 'MLRS'
+// Keep TX timeout comfortably above practical on-air duration on SX1262 at 19 Hz.
+// This prevents false TX timeout on some modules while preserving deterministic waits.
+#define TRX_SEND_FRAME_TMO_MS     ((uint16_t)(SEND_FRAME_TMO_MS + 20U))
+// Shorter UI/role timeout for unified transparent link.
+#define TRX_CONNECT_TIMEOUT_MS     500U
 
 typedef enum {
     TRX_PAIRING_REQ = 1,
@@ -90,9 +110,16 @@ typedef struct __attribute__((packed)) {
     uint32_t magic;
     uint8_t type;
     uint8_t token;
+    uint32_t uid;
     char phrase[6];
     uint16_t crc;
 } tTrxPairingMsg;
+
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint32_t uid;
+    uint16_t crc;
+} tTrxDiscoveryFrame;
 
 static volatile uint16_t irq_status;
 #ifdef USE_SX2
@@ -100,7 +127,7 @@ static volatile uint16_t irq2_status;
 #endif
 
 static bool link_connected;
-static uint16_t link_tmo_cnt;
+static uint32_t link_tmo_deadline_ms;
 
 static uint8_t tx_seq_no;
 static tReceiveArq recv_arq;
@@ -111,6 +138,12 @@ static uint32_t pairing_deadline_ms;
 static bool pairing_phrase_valid;
 static char pairing_phrase[6 + 1];
 static uint8_t pairing_token;
+static uint32_t pairing_rand_state;
+static uint32_t pairing_next_cycle_ms;
+static uint32_t local_uid;
+static uint32_t role_retry_deadline_ms;
+static uint32_t role_retry_rand_state;
+static bool serial_once_initialized;
 
 #ifdef USE_COM
 static tComPort config_port;
@@ -169,9 +202,21 @@ static uint32_t uid_to_u32(void)
     return a ^ b ^ c;
 }
 
+static uint32_t rand32_step(uint32_t* state)
+{
+    *state = (*state * 1664525U) + 1013904223U;
+    return *state;
+}
+
+static void schedule_role_retry_deadline(uint16_t base_ms)
+{
+    uint16_t jitter_ms = (uint16_t)(rand32_step(&role_retry_rand_state) & 0x01FFU); // 0..511
+    role_retry_deadline_ms = millis32() + base_ms + jitter_ms;
+}
+
 static void generate_pairing_phrase(char out[6 + 1])
 {
-    uint32_t seed = uid_to_u32() ^ millis32();
+    uint32_t seed = local_uid ^ millis32();
     for (uint8_t i = 0; i < 6; i++) {
         seed = seed * 1664525U + 1013904223U;
         out[i] = bindphrase_chars[seed % BINDPHRASE_CHARS_LEN];
@@ -183,6 +228,11 @@ static void apply_pairing_phrase_config(void)
 {
     char phrase[6 + 1] = TRX_PAIRING_PHRASE;
     strcpy(Setup.Common[Config.ConfigId].BindPhrase, phrase);
+    // Pairing must use deterministic RF settings so two modules with different stored
+    // params can still discover each other.
+    Setup.Common[Config.ConfigId].FrequencyBand = SETUP_RF_BAND;
+    Setup.Common[Config.ConfigId].Mode = MODE_19HZ;
+    Setup.Common[Config.ConfigId].Ortho = SETUP_RF_ORTHO;
     setup_sanitize_config(Config.ConfigId);
     setup_configure_config(Config.ConfigId);
 }
@@ -200,10 +250,14 @@ static void pairing_commit(const char* phrase)
 {
     strncpy(Setup.Common[Config.ConfigId].BindPhrase, phrase, 6);
     Setup.Common[Config.ConfigId].BindPhrase[6] = '\0';
+    Setup.Common[Config.ConfigId].FrequencyBand = SETUP_RF_BAND;
+    Setup.Common[Config.ConfigId].Mode = MODE_19HZ;
+    Setup.Common[Config.ConfigId].Ortho = SETUP_RF_ORTHO;
     setup_sanitize_config(Config.ConfigId);
     setup_configure_config(Config.ConfigId);
     setup_store_to_EEPROM();
     pairing_mode = false;
+    trx_dbg_pairing = 0;
     pairing_phrase_valid = false;
 }
 
@@ -213,10 +267,26 @@ static bool wait_for_rx_done(uint16_t timeout_ms)
     while ((uint32_t)(millis32() - t0) <= timeout_ms + 1U) {
         uint16_t irqs = irq_status;
         irq_status = 0;
+        // Fallback to polling radio IRQ status in case DIO1/EXTI path is not firing.
+        // This keeps link operation robust on boards where EXTI routing is flaky.
+        irqs |= sx.GetAndClearIrqStatus(SX_IRQ_ALL);
+        if (irqs) trx_dbg_last_irq = irqs;
 
-        if (irqs & SX_IRQ_RX_DONE) return true;
-        if (irqs & SX_IRQ_TIMEOUT) return false;
+        if (irqs & SX_IRQ_RX_DONE) {
+            trx_dbg_rx_done_hits++;
+            return true;
+        }
+        if (irqs & SX_IRQ_TIMEOUT) {
+            trx_dbg_rx_timeouts++;
+            trx_dbg_last_status = sx.GetLastStatus();
+            trx_dbg_last_deverr = sx.GetDeviceError();
+            return false;
+        }
+        delay_us(50);
     }
+    trx_dbg_rx_timeouts++;
+    trx_dbg_last_status = sx.GetLastStatus();
+    trx_dbg_last_deverr = sx.GetDeviceError();
     return false;
 }
 
@@ -226,10 +296,25 @@ static bool wait_for_tx_done(uint16_t timeout_ms)
     while ((uint32_t)(millis32() - t0) <= timeout_ms + 1U) {
         uint16_t irqs = irq_status;
         irq_status = 0;
+        // Fallback to polling radio IRQ status in case DIO1/EXTI path is not firing.
+        irqs |= sx.GetAndClearIrqStatus(SX_IRQ_ALL);
+        if (irqs) trx_dbg_last_irq = irqs;
 
-        if (irqs & SX_IRQ_TX_DONE) return true;
-        if (irqs & SX_IRQ_TIMEOUT) return false;
+        if (irqs & SX_IRQ_TX_DONE) {
+            trx_dbg_tx_done_hits++;
+            return true;
+        }
+        if (irqs & SX_IRQ_TIMEOUT) {
+            trx_dbg_tx_timeouts++;
+            trx_dbg_last_status = sx.GetLastStatus();
+            trx_dbg_last_deverr = sx.GetDeviceError();
+            return false;
+        }
+        delay_us(50);
     }
+    trx_dbg_tx_timeouts++;
+    trx_dbg_last_status = sx.GetLastStatus();
+    trx_dbg_last_deverr = sx.GetDeviceError();
     return false;
 }
 
@@ -238,38 +323,12 @@ static bool wait_for_tx_done(uint16_t timeout_ms)
 // Role discovery (pairing)
 //------------------------------------------------------------------------------
 
-#define TRX_DISCOVERY_MAGIC  0x4D4C5253UL  // 'MLRS'
-
-typedef struct __attribute__((packed)) {
-    uint32_t magic;
-    uint32_t uid;
-    uint16_t crc;
-} tTrxDiscoveryFrame;
-
-static void send_discovery(uint32_t uid)
+static bool parse_discovery_msg(const uint8_t* payload, uint8_t len, uint32_t* peer_uid)
 {
+    if (len < sizeof(tTrxDiscoveryFrame)) return false;
+
     tTrxDiscoveryFrame d;
-    d.magic = TRX_DISCOVERY_MAGIC;
-    d.uid = uid;
-    d.crc = crc16_ccitt((uint8_t*)&d, sizeof(d) - 2);
-
-    irq_status = 0;
-    sx.SendFrame((uint8_t*)&d, sizeof(d), SEND_FRAME_TMO_MS);
-    (void)wait_for_tx_done(SEND_FRAME_TMO_MS + 2);
-}
-
-static bool recv_discovery(uint32_t* peer_uid, uint16_t rx_timeout_ms)
-{
-    tTrxDiscoveryFrame d;
-
-    irq_status = 0;
-    sx.SetToRx(rx_timeout_ms);
-    if (!wait_for_rx_done(rx_timeout_ms)) {
-        return false;
-    }
-
-    sx.ReadFrame((uint8_t*)&d, sizeof(d));
-
+    memcpy(&d, payload, sizeof(d));
     if (d.magic != TRX_DISCOVERY_MAGIC) return false;
     if (d.crc != crc16_ccitt((uint8_t*)&d, sizeof(d) - 2)) return false;
 
@@ -277,22 +336,64 @@ static bool recv_discovery(uint32_t* peer_uid, uint16_t rx_timeout_ms)
     return true;
 }
 
-static TRX_ROLE_ENUM discover_role(void)
+static void send_discovery(uint32_t uid)
 {
-    const uint32_t my_uid = uid_to_u32();
-    const uint32_t t_end = millis32() + 3000U;
+    tTrxDiscoveryFrame d = {};
+    d.magic = TRX_DISCOVERY_MAGIC;
+    d.uid = uid;
+    d.crc = crc16_ccitt((uint8_t*)&d, sizeof(d) - 2);
 
-    uint32_t next_tx = millis32() + 20U + (my_uid & 0x1FU);
+    tFrameStats fs = {};
+    fs.seq_no = tx_seq_no++;
+    fs.ack = recv_arq.AckSeqNo();
+    fs.antenna = ANTENNA_1;
+    fs.transmit_antenna = ANTENNA_1;
+    fs.rssi = stats.GetLastRssi();
+    fs.tx_fhss_index_band = 0;
+    fs.tx_fhss_index = 0;
+    fs.LQ_rc = 0;
+    fs.LQ_serial = 0;
+    pack_txframe(&txFrame, &fs, &rcData, (uint8_t*)&d, sizeof(d));
+
+    irq_status = 0;
+    sx.SendFrame((uint8_t*)&txFrame, FRAME_TX_RX_LEN, TRX_SEND_FRAME_TMO_MS);
+    (void)wait_for_tx_done(TRX_SEND_FRAME_TMO_MS + 2);
+}
+
+static bool recv_discovery(uint32_t* peer_uid, uint16_t rx_timeout_ms)
+{
+    irq_status = 0;
+    sx.SetToRx(rx_timeout_ms);
+    if (!wait_for_rx_done(rx_timeout_ms)) {
+        return false;
+    }
+
+    sx.ReadFrame((uint8_t*)&txFrame, FRAME_TX_RX_LEN);
+    if (check_txframe(&txFrame) != CHECK_OK) return false;
+    return parse_discovery_msg(txFrame.payload, txFrame.status.payload_len, peer_uid);
+}
+
+static TRX_ROLE_ENUM discover_role(uint16_t discover_ms)
+{
+    const uint32_t my_uid = local_uid;
+    uint32_t prng = my_uid ^ (millis32() * 2654435761UL) ^ 0x9E3779B9UL;
+    const uint32_t t_end = millis32() + discover_ms;
 
     while ((int32_t)(millis32() - t_end) < 0) {
-        uint32_t now = millis32();
-        if ((int32_t)(now - next_tx) >= 0) {
-            send_discovery(my_uid);
-            next_tx = now + 40U + (my_uid & 0x0FU);
+        uint32_t peer_uid = 0;
+
+        if (recv_discovery(&peer_uid, 8)) {
+            if (peer_uid == my_uid) continue;
+            return (my_uid > peer_uid) ? TRX_ROLE_MASTER : TRX_ROLE_SLAVE;
         }
 
-        uint32_t peer_uid = 0;
-        if (recv_discovery(&peer_uid, 12)) {
+        send_discovery(my_uid);
+
+        uint16_t backoff_ms = 2U + (rand32_step(&prng) & 0x0FU);
+        uint32_t t_backoff_end = millis32() + backoff_ms;
+        while ((int32_t)(millis32() - t_backoff_end) < 0 &&
+               (int32_t)(millis32() - t_end) < 0) {
+            if (!recv_discovery(&peer_uid, 4)) continue;
             if (peer_uid == my_uid) continue;
             return (my_uid > peer_uid) ? TRX_ROLE_MASTER : TRX_ROLE_SLAVE;
         }
@@ -300,6 +401,13 @@ static TRX_ROLE_ENUM discover_role(void)
 
     // If nothing was discovered (single module powered), default to master.
     return TRX_ROLE_MASTER;
+}
+
+static void set_trx_role(TRX_ROLE_ENUM role)
+{
+    if (trx_role != role) trx_dbg_role_switches++;
+    trx_role = role;
+    trx_dbg_role = (uint8_t)role;
 }
 
 
@@ -315,13 +423,14 @@ bool connected(void)
 static void set_connected(void)
 {
     link_connected = true;
-    link_tmo_cnt = CONNECT_TMO_SYSTICKS;
+    link_tmo_deadline_ms = millis32() + TRX_CONNECT_TIMEOUT_MS;
+    schedule_role_retry_deadline(800U);
 }
 
 static void set_disconnected(void)
 {
     link_connected = false;
-    link_tmo_cnt = 0;
+    link_tmo_deadline_ms = 0;
     recv_arq.Disconnected();
 }
 
@@ -337,6 +446,7 @@ static uint8_t read_serial_payload(uint8_t* payload, uint8_t max_len)
         if (!serial.available()) break;
         payload[n] = (uint8_t)serial.getc();
     }
+    trx_dbg_ser_in_bytes += n;
     return n;
 }
 
@@ -345,7 +455,28 @@ static void process_rx_payload(uint8_t* payload, uint8_t len, uint8_t seq_no)
     recv_arq.Received(seq_no);
     if (!recv_arq.AcceptPayload()) return;
 
-    if (len) serial.putbuf(payload, len);
+    // Never leak internal control frames (role discovery / pairing) into serial passthrough.
+    if (len == sizeof(tTrxDiscoveryFrame)) {
+        tTrxDiscoveryFrame d = {};
+        memcpy(&d, payload, sizeof(d));
+        if ((d.magic == TRX_DISCOVERY_MAGIC) &&
+            (d.crc == crc16_ccitt((uint8_t*)&d, sizeof(d) - 2))) {
+            return;
+        }
+    }
+    if (len == sizeof(tTrxPairingMsg)) {
+        tTrxPairingMsg p = {};
+        memcpy(&p, payload, sizeof(p));
+        if ((p.magic == TRX_PAIRING_MAGIC) &&
+            (p.crc == crc16_ccitt((uint8_t*)&p, sizeof(p) - 2))) {
+            return;
+        }
+    }
+
+    if (len) {
+        serial.putbuf(payload, len);
+        trx_dbg_ser_out_bytes += len;
+    }
 }
 
 static void fill_frame_stats(tFrameStats* s, uint8_t seq_no)
@@ -366,18 +497,62 @@ static void fill_frame_stats(tFrameStats* s, uint8_t seq_no)
 // Master / slave transactions
 //------------------------------------------------------------------------------
 
-static void pairing_master_step(void)
+static bool pairing_handle_req_from_txframe(tTxFrame* const frame)
 {
-    static uint32_t next_cycle_ms = 0;
+    if (check_txframe(frame) != CHECK_OK) return false;
 
+    tTrxPairingMsg req = {};
+    if (!parse_pairing_msg(frame->payload, frame->status.payload_len, &req)) return false;
+    if (req.type != TRX_PAIRING_REQ) return false;
+    if (req.uid == local_uid) return false;
+    if (req.uid < local_uid) return false; // deterministic tie-break: higher UID request wins.
+
+    tTrxPairingMsg ack = {};
+    ack.magic = TRX_PAIRING_MAGIC;
+    ack.type = TRX_PAIRING_ACK;
+    ack.token = req.token;
+    ack.uid = req.uid; // echo requester UID to disambiguate concurrent handshakes.
+    memcpy(ack.phrase, req.phrase, 6);
+    ack.crc = crc16_ccitt((uint8_t*)&ack, sizeof(ack) - 2);
+
+    tFrameStats fs = {};
+    fill_frame_stats(&fs, tx_seq_no++);
+    pack_rxframe(&rxFrame, &fs, (uint8_t*)&ack, sizeof(ack));
+
+    irq_status = 0;
+    sx.SendFrame((uint8_t*)&rxFrame, FRAME_TX_RX_LEN, TRX_SEND_FRAME_TMO_MS);
+    (void)wait_for_tx_done(TRX_SEND_FRAME_TMO_MS + 2);
+
+    pairing_commit(req.phrase);
+    pairing_restart = true;
+    return true;
+}
+
+static bool pairing_handle_req_frame(void)
+{
+    sx.ReadFrame((uint8_t*)&txFrame, FRAME_TX_RX_LEN);
+    return pairing_handle_req_from_txframe(&txFrame);
+}
+
+static void pairing_step(void)
+{
     uint32_t now = millis32();
     if ((int32_t)(now - pairing_deadline_ms) > 0) {
         pairing_mode = false;
+        trx_dbg_pairing = 0;
         pairing_restart = true;
         return;
     }
-    if ((int32_t)(now - next_cycle_ms) < 0) return;
-    next_cycle_ms = now + Config.frame_rate_ms;
+
+    if ((int32_t)(now - pairing_next_cycle_ms) < 0) return;
+    pairing_next_cycle_ms = now + Config.frame_rate_ms + (rand32_step(&pairing_rand_state) & 0x07U);
+
+    uint16_t rx_listen_ms = 8U + (rand32_step(&pairing_rand_state) & 0x07U);
+    irq_status = 0;
+    sx.SetToRx(rx_listen_ms);
+    if (wait_for_rx_done((uint16_t)(rx_listen_ms + 3U))) {
+        if (pairing_handle_req_frame()) return;
+    }
 
     if (!pairing_phrase_valid) {
         generate_pairing_phrase(pairing_phrase);
@@ -388,87 +563,45 @@ static void pairing_master_step(void)
     msg.magic = TRX_PAIRING_MAGIC;
     msg.type = TRX_PAIRING_REQ;
     msg.token = pairing_token;
+    msg.uid = local_uid;
     memcpy(msg.phrase, pairing_phrase, 6);
     msg.crc = crc16_ccitt((uint8_t*)&msg, sizeof(msg) - 2);
 
     tFrameStats fs = {};
     fill_frame_stats(&fs, tx_seq_no++);
-
     pack_txframe(&txFrame, &fs, &rcData, (uint8_t*)&msg, sizeof(msg));
 
     irq_status = 0;
-    sx.SendFrame((uint8_t*)&txFrame, FRAME_TX_RX_LEN, SEND_FRAME_TMO_MS);
-    if (!wait_for_tx_done(SEND_FRAME_TMO_MS + 2)) {
+    sx.SendFrame((uint8_t*)&txFrame, FRAME_TX_RX_LEN, TRX_SEND_FRAME_TMO_MS);
+    if (!wait_for_tx_done(TRX_SEND_FRAME_TMO_MS + 2)) {
         recv_arq.FrameMissed();
         return;
     }
 
     irq_status = 0;
-    sx.SetToRx(SEND_FRAME_TMO_MS);
-    if (!wait_for_rx_done(SEND_FRAME_TMO_MS + 2)) {
+    sx.SetToRx(TRX_SEND_FRAME_TMO_MS);
+    if (!wait_for_rx_done(TRX_SEND_FRAME_TMO_MS + 2)) {
         recv_arq.FrameMissed();
         return;
     }
 
     sx.ReadFrame((uint8_t*)&rxFrame, FRAME_TX_RX_LEN);
     if (check_rxframe(&rxFrame) != CHECK_OK) {
+        // If we got a TX frame while waiting for ACK, peer likely sent its REQ
+        // in our ACK window. Handle it so pairing can still converge.
+        if (pairing_handle_req_from_txframe((tTxFrame*)&rxFrame)) return;
         recv_arq.FrameMissed();
         return;
     }
 
     tTrxPairingMsg ack = {};
-    if (parse_pairing_msg(rxFrame.payload, rxFrame.status.payload_len, &ack) &&
-        ack.type == TRX_PAIRING_ACK &&
-        ack.token == pairing_token &&
-        memcmp(ack.phrase, pairing_phrase, 6) == 0) {
-        pairing_commit(pairing_phrase);
-        pairing_restart = true;
-    }
-}
+    if (!parse_pairing_msg(rxFrame.payload, rxFrame.status.payload_len, &ack)) return;
+    if (ack.type != TRX_PAIRING_ACK) return;
+    if (ack.uid != local_uid) return;
+    if (ack.token != pairing_token) return;
+    if (memcmp(ack.phrase, pairing_phrase, 6) != 0) return;
 
-static void pairing_slave_step(void)
-{
-    if ((int32_t)(millis32() - pairing_deadline_ms) > 0) {
-        pairing_mode = false;
-        pairing_restart = true;
-        return;
-    }
-
-    irq_status = 0;
-    sx.SetToRx(25);
-    if (!wait_for_rx_done(28)) {
-        return;
-    }
-
-    sx.ReadFrame((uint8_t*)&txFrame, FRAME_TX_RX_LEN);
-    if (check_txframe(&txFrame) != CHECK_OK) {
-        return;
-    }
-
-    tTrxPairingMsg req = {};
-    if (!parse_pairing_msg(txFrame.payload, txFrame.status.payload_len, &req)) {
-        return;
-    }
-    if (req.type != TRX_PAIRING_REQ) {
-        return;
-    }
-
-    tTrxPairingMsg ack = {};
-    ack.magic = TRX_PAIRING_MAGIC;
-    ack.type = TRX_PAIRING_ACK;
-    ack.token = req.token;
-    memcpy(ack.phrase, req.phrase, 6);
-    ack.crc = crc16_ccitt((uint8_t*)&ack, sizeof(ack) - 2);
-
-    tFrameStats fs = {};
-    fill_frame_stats(&fs, tx_seq_no++);
-    pack_rxframe(&rxFrame, &fs, (uint8_t*)&ack, sizeof(ack));
-
-    irq_status = 0;
-    sx.SendFrame((uint8_t*)&rxFrame, FRAME_TX_RX_LEN, SEND_FRAME_TMO_MS);
-    (void)wait_for_tx_done(SEND_FRAME_TMO_MS + 2);
-
-    pairing_commit(req.phrase);
+    pairing_commit(pairing_phrase);
     pairing_restart = true;
 }
 
@@ -489,23 +622,49 @@ static void master_step(void)
     pack_txframe(&txFrame, &fs, &rcData, payload, payload_len);
 
     irq_status = 0;
-    sx.SendFrame((uint8_t*)&txFrame, FRAME_TX_RX_LEN, SEND_FRAME_TMO_MS);
-    if (!wait_for_tx_done(SEND_FRAME_TMO_MS + 2)) {
+    sx.SendFrame((uint8_t*)&txFrame, FRAME_TX_RX_LEN, TRX_SEND_FRAME_TMO_MS);
+    if (!wait_for_tx_done(TRX_SEND_FRAME_TMO_MS + 2)) {
         recv_arq.FrameMissed();
         return;
     }
 
     irq_status = 0;
-    sx.SetToRx(SEND_FRAME_TMO_MS);
-    if (!wait_for_rx_done(SEND_FRAME_TMO_MS + 2)) {
+    sx.SetToRx(TRX_SEND_FRAME_TMO_MS);
+    if (!wait_for_rx_done(TRX_SEND_FRAME_TMO_MS + 2)) {
         recv_arq.FrameMissed();
-        if (!connected()) serial.flush();
+        if (!connected()) {
+            serial.flush();
+            next_cycle_ms += 2U + (rand32_step(&role_retry_rand_state) & 0x0FU);
+        }
         return;
     }
 
     sx.ReadFrame((uint8_t*)&rxFrame, FRAME_TX_RX_LEN);
     if (check_rxframe(&rxFrame) != CHECK_OK) {
+        // Self-heal: if we received a TX frame here, the peer is also in master role.
+        if (check_txframe((tTxFrame*)&rxFrame) == CHECK_OK) {
+            tTxFrame* peer_tx = (tTxFrame*)&rxFrame;
+            uint8_t tx_payload[FRAME_TX_PAYLOAD_LEN];
+            uint8_t tx_payload_len = peer_tx->status.payload_len;
+            for (uint8_t i = 0; i < tx_payload_len; i++) tx_payload[i] = peer_tx->payload[i];
+            process_rx_payload(tx_payload, tx_payload_len, peer_tx->status.seq_no);
+
+            uint8_t rx_payload[FRAME_RX_PAYLOAD_LEN];
+            uint8_t rx_payload_len = read_serial_payload(rx_payload, FRAME_RX_PAYLOAD_LEN);
+            tFrameStats fs2 = {};
+            fill_frame_stats(&fs2, tx_seq_no++);
+            pack_rxframe(&rxFrame, &fs2, rx_payload, rx_payload_len);
+
+            irq_status = 0;
+            sx.SendFrame((uint8_t*)&rxFrame, FRAME_TX_RX_LEN, TRX_SEND_FRAME_TMO_MS);
+            (void)wait_for_tx_done(TRX_SEND_FRAME_TMO_MS + 2);
+
+            set_trx_role(TRX_ROLE_SLAVE);
+            set_connected();
+            return;
+        }
         recv_arq.FrameMissed();
+        next_cycle_ms += 2U + (rand32_step(&role_retry_rand_state) & 0x0FU);
         return;
     }
 
@@ -518,15 +677,23 @@ static void slave_step(void)
 {
     uint8_t tx_payload[FRAME_TX_PAYLOAD_LEN];
     uint8_t tx_payload_len;
+    const uint16_t slave_listen_tmo_ms = (uint16_t)(TRX_SEND_FRAME_TMO_MS + 3U);
 
     irq_status = 0;
-    sx.SetToRx(25);
-    if (!wait_for_rx_done(28)) {
+    sx.SetToRx(slave_listen_tmo_ms);
+    if (!wait_for_rx_done((uint16_t)(slave_listen_tmo_ms + 3U))) {
         return;
     }
 
     sx.ReadFrame((uint8_t*)&txFrame, FRAME_TX_RX_LEN);
     if (check_txframe(&txFrame) != CHECK_OK) {
+        // Self-heal: if we received an RX frame while listening, peer is likely also in slave role.
+        if (check_rxframe((tRxFrame*)&txFrame) == CHECK_OK) {
+            set_trx_role(TRX_ROLE_MASTER);
+            tRxFrame* peer_rx = (tRxFrame*)&txFrame;
+            process_rx_payload(peer_rx->payload, peer_rx->status.payload_len, peer_rx->status.seq_no);
+            set_connected();
+        }
         return;
     }
 
@@ -545,10 +712,25 @@ static void slave_step(void)
     pack_rxframe(&rxFrame, &fs, rx_payload, rx_payload_len);
 
     irq_status = 0;
-    sx.SendFrame((uint8_t*)&rxFrame, FRAME_TX_RX_LEN, SEND_FRAME_TMO_MS);
-    (void)wait_for_tx_done(SEND_FRAME_TMO_MS + 2);
+    sx.SendFrame((uint8_t*)&rxFrame, FRAME_TX_RX_LEN, TRX_SEND_FRAME_TMO_MS);
+    (void)wait_for_tx_done(TRX_SEND_FRAME_TMO_MS + 2);
 
     set_connected();
+}
+
+static void role_resync_step(void)
+{
+    if (pairing_mode) return;
+    if (connected()) {
+        schedule_role_retry_deadline(800U);
+        return;
+    }
+
+    if ((int32_t)(millis32() - role_retry_deadline_ms) < 0) return;
+
+    // Keep this slice short; long blocking discovery causes visible LED stutter.
+    set_trx_role(discover_role(40U));
+    role_retry_deadline_ms = millis32() + 120U;
 }
 
 
@@ -565,7 +747,10 @@ static void init_hw(void)
     leds_init();
     button_init();
 
-    serial.InitOnce();
+    if (!serial_once_initialized) {
+        serial.InitOnce();
+        serial_once_initialized = true;
+    }
     serial.Init();
 #ifdef USE_COM
     config_port.Init();
@@ -579,22 +764,42 @@ static void init_hw(void)
     sx2.Init();
 
     setup_init();
+    local_uid = uid_to_u32();
+
+    // Soft restart (GOTO_RESTARTCONTROLLER) does not zero BSS; reset debug counters explicitly.
+    trx_dbg_tx_done_hits = 0;
+    trx_dbg_rx_done_hits = 0;
+    trx_dbg_tx_timeouts = 0;
+    trx_dbg_rx_timeouts = 0;
+    trx_dbg_role_switches = 0;
+    trx_dbg_ser_in_bytes = 0;
+    trx_dbg_ser_out_bytes = 0;
+    trx_dbg_last_irq = 0;
+    trx_dbg_last_status = 0;
+    trx_dbg_last_deverr = 0;
+    irq_status = 0;
 
     if (pairing_mode) {
         apply_pairing_phrase_config();
         pairing_deadline_ms = millis32() + TRX_PAIRING_TIMEOUT_MS;
-        pairing_token = (uint8_t)(uid_to_u32() ^ millis32());
+        pairing_token = (uint8_t)(local_uid ^ millis32());
+        pairing_rand_state = local_uid ^ millis32() ^ 0xA5A55A5AU;
+        pairing_next_cycle_ms = 0;
         pairing_phrase_valid = false;
         pairing_restart = false;
     } else {
+        pairing_rand_state = 0;
+        pairing_next_cycle_ms = 0;
         pairing_phrase_valid = false;
         pairing_restart = false;
     }
+    trx_dbg_pairing = pairing_mode ? 1 : 0;
 
     // Unified firmware is dedicated to transparent serial transfer.
     Setup.Rx.SerialLinkMode = SERIAL_LINK_MODE_TRANSPARENT;
 
     serial.SetBaudRate(Config.SerialBaudrate);
+    serial.flush();
 #ifdef USE_COM
     info.Init();
     tasks.Init();
@@ -621,8 +826,15 @@ static void init_hw(void)
     recv_arq.Init();
     tx_seq_no = 0;
     set_disconnected();
+    trx_dbg_send_tmo_ms = TRX_SEND_FRAME_TMO_MS;
+    role_retry_rand_state = local_uid ^ millis32() ^ 0xC3C33C3CU;
 
-    trx_role = discover_role();
+    if (pairing_mode) {
+        set_trx_role(TRX_ROLE_MASTER);
+    } else {
+        set_trx_role(discover_role(3000U));
+    }
+    schedule_role_retry_deadline(700U);
 
     leds.Init();
     if (pairing_mode) {
@@ -640,16 +852,18 @@ RESTARTCONTROLLER
     init_hw();
 INITCONTROLLER_END
 
-    if (doSysTask()) {
-        if (link_tmo_cnt) {
-            link_tmo_cnt--;
-        } else {
-            set_disconnected();
-        }
+    // Keep timeout tracking independent of SysTick task cadence in this blocking loop design.
+    if (link_connected && ((int32_t)(millis32() - link_tmo_deadline_ms) > 0)) {
+        set_disconnected();
+    }
 
-        leds.Tick_ms(connected());
+    // Drive LED state every loop to avoid role-dependent blink cadence differences.
+    leds.Tick_ms(connected());
+
+    if (doSysTask()) {
         fan.SetPower(sx.RfPower_dbm());
         fan.Tick_ms();
+        role_resync_step();
 
         // Long-press button to start pairing (random bind phrase exchange).
         static uint32_t pair_press_start_ms = 0;
@@ -657,6 +871,7 @@ INITCONTROLLER_END
             if (pair_press_start_ms == 0) pair_press_start_ms = millis32();
             if ((uint32_t)(millis32() - pair_press_start_ms) >= 2000) {
                 pairing_mode = true;
+                trx_dbg_pairing = 1;
                 pair_press_start_ms = 0;
                 GOTO_RESTARTCONTROLLER;
             }
@@ -683,17 +898,14 @@ INITCONTROLLER_END
             break;
         case MAIN_TASK_BIND_START:
             pairing_mode = true;
+            trx_dbg_pairing = 1;
             GOTO_RESTARTCONTROLLER;
             break;
     }
 #endif
 
     if (pairing_mode) {
-        if (trx_role == TRX_ROLE_MASTER) {
-            pairing_master_step();
-        } else {
-            pairing_slave_step();
-        }
+        pairing_step();
         if (pairing_restart) {
             pairing_restart = false;
             GOTO_RESTARTCONTROLLER;

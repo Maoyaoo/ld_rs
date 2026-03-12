@@ -12,6 +12,9 @@
 
 
 #include "hal/hal.h"
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+extern volatile uint32_t millis32(void);
+#endif
 
 
 #ifdef DEVICE_HAS_NO_LED
@@ -72,6 +75,31 @@ class tLEDs
             if (!blink) led_red_toggle();
         }
 #else
+#ifdef FIRMWARE_MATEK_MR900_30_G431KB
+        uint32_t now_ms = millis32();
+        if (is_in_bind) {
+            bool phase_bind = ((now_ms / 120U) & 0x01U) != 0U;
+            if (phase_bind) {
+                led_red_on();
+                led_green_off();
+            } else {
+                led_red_off();
+                led_green_on();
+            }
+            return;
+        }
+
+        bool phase_link = ((now_ms / 250U) & 0x01U) != 0U;
+        if (connected) {
+            if (phase_link) led_green_on();
+            else led_green_off();
+            led_red_off();
+        } else {
+            led_green_off();
+            if (phase_link) led_red_on();
+            else led_red_off();
+        }
+#else
         if (connected) {
             DECc(blink, SYSTICK_DELAY_MS(500));
         } else {
@@ -89,6 +117,7 @@ class tLEDs
             if (!blink) led_red_toggle();
         }
 #endif
+#endif
     }
 
     void SetToBind(void)
@@ -97,6 +126,7 @@ class tLEDs
         led_green_on();
 #endif
         led_red_off();
+        blink = 0;
         is_in_bind = true;
      }
 

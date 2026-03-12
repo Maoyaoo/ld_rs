@@ -53,6 +53,7 @@ volatile uint16_t usb_txreadpos; // pos at which the next byte is to be fetched
 uint8_t usb_rcbuf[USB_RXBUFSIZE]; // what size does it have to be?
 uint8_t usb_trbuf[64];
 void _cdc_transmit(void); // forward declaration
+void usb_flush(void); // forward declaration
 
 static uint8_t usbd_initialized = 0; // to track if we have initialized usb already
 
@@ -66,6 +67,19 @@ uint32_t usb_baudrate(void) { return USBD_CDC_LineCoding.bitrate; }
 
 void usb_init(void)
 {
+    // In soft restarts (GOTO_RESTARTCONTROLLER), usb_init() may be called again.
+    // Keep the active USB device session and just clear software state so host-side
+    // CDC enumeration/handles remain stable.
+    if (usbd_initialized) {
+        usb_flush();
+        usbd_dtr_rts = 0;
+        USBD_CDC_LineCoding.bitrate = 115200;
+        USBD_CDC_LineCoding.format = 0;
+        USBD_CDC_LineCoding.paritytype = 0;
+        USBD_CDC_LineCoding.datatype = 8;
+        return;
+    }
+
 #if defined STM32G431xx || defined STM32G441xx || defined STM32G491xx || defined STM32G474xx
     // initialize HSI48, copied with adaption from SystemClock_Config()
     RCC_OscInitTypeDef RCC_OscInitStruct = {};
@@ -134,6 +148,9 @@ void usb_deinit(void)
     RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE; // important, otherwise HAL_RCC_OscConfig() would set PLL
     if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {}
 #endif
+
+    usbd_initialized = 0;
+    usbd_dtr_rts = 0;
 }
 
 

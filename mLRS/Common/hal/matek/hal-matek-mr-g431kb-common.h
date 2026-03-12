@@ -131,8 +131,8 @@ void button_init(void)
 
 bool button_pressed(void)
 {
-    // Matek mR900-30 button is active-low with pull-up.
-    return gpio_read_activelow(BUTTON);
+    // mR24-30/mR900-30 button is active-high on this shared target family.
+    return gpio_read_activehigh(BUTTON);
 }
 
 
@@ -222,4 +222,3 @@ uint32_t portb[] = {
 
 uint32_t portc[] = {
 };
-
