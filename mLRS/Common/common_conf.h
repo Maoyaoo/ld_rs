@@ -66,13 +66,13 @@
 
 #define SETUP_RX_SERIAL_PORT 0  // 0: 串口, 1: CAN
 
-#define SETUP_RX_SERIAL_BAUDRATE 3  // 0: 9600, 1: 19200, 2: 38400, 3: 57600, 4: 115200, 5: 230400
+#define SETUP_RX_SERIAL_BAUDRATE 4  // 0: 9600, 1: 19200, 2: 38400, 3: 57600, 4: 115200, 5: 230400
 
 #define SETUP_RX_POWER CPOWER
 
 #define SETUP_RX_DIVERSITY DIVERSITY  // 0: 默认, 1: 天线1 (如果支持分集), 2: 天线2 (如果支持分集)
 
-#define SETUP_RX_SERIAL_LINK_MODE 2  // 0: 透明传输, 1: mavlink, 2: mavlinkX, 3: mspX
+#define SETUP_RX_SERIAL_LINK_MODE 0  // 0: 透明传输, 1: mavlink, 2: mavlinkX, 3: mspX
 
 #define SETUP_RX_SEND_RADIO_STATUS 1  // 0: 关闭, 1: ardu_1, 2: px4 (也叫 "brad")
 #define SETUP_RX_SEND_RC_CHANNELS 0   // 0: 关闭, 1: RC_CHANNEL_OVERRIDE, 2: RC_CHANNELS
@@ -80,14 +80,16 @@
 #define SETUP_RX_OUT_RSSI_CHANNEL 0  // 0: 关闭, 5: CH5, 16: CH16
 #define SETUP_RX_OUT_LQ_CHANNEL 0    // 0: 关闭, 5: CH5, 16: CH16
 
-#define BIND_PHRASE "mlrs.0"  // 6字符字符串，允许使用 'a'-'z','0'-'9','_','-','#','.'
+#define BIND_PHRASE "ldrs.0"  // 6字符字符串，允许使用 'a'-'z','0'-'9','_','-','#','.'
 
-#define SETUP_MODE MODE_50HZ
-// #define SETUP_MODE                      MODE_31HZ
-// #define SETUP_MODE                      MODE_19HZ
 
-// #define SETUP_RF_BAND                    SETUP_FREQUENCY_BAND_915_MHZ_FCC
-#define SETUP_RF_BAND SETUP_FREQUENCY_BAND_868_MHZ  // 这是我个人的偏好 :)
+//#define SETUP_MODE                      MODE_50HZ
+//#define SETUP_MODE                      MODE_31HZ
+#define SETUP_MODE                      MODE_19HZ
+
+
+#define SETUP_RF_BAND                    SETUP_FREQUENCY_BAND_915_MHZ_FCC
+//#define SETUP_RF_BAND                    SETUP_FREQUENCY_BAND_868_MHZ // that's my privilege :)
 
 #define SETUP_RF_ORTHO 0  // 0: 关闭, 1: 1/3, 2: 2/3, 3: 3/3
 
@@ -129,7 +131,7 @@
 #define TX_MBRIDGE_TXBUFSIZE 512
 #define TX_MBRIDGE_RXBUFSIZE 2048  // MissionPlanner真的很霸道
 
-#define RX_SERIAL_BAUDRATE 57600  // 会被setup覆盖
+#define RX_SERIAL_BAUDRATE 115200  // 会被setup覆盖
 #define RX_SERIAL_TXBUFSIZE 1024
 #define RX_SERIAL_RXBUFSIZE 2048  // ArduPilot也很霸道
 

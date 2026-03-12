@@ -25,8 +25,24 @@
 #include "usbd_conf.h"
 
 
-#define USBD_VID                      0x0483
-#define USBD_PID                      22336 // 0x5740
+//CONFIG_CDCACM_PRODUCTID=0x0035
+//CONFIG_CDCACM_PRODUCTSTR="LDT LD001"
+//CONFIG_CDCACM_RXBUFSIZE=600
+//CONFIG_CDCACM_TXBUFSIZE=1200
+//#TODO：ally for VENDOR ID in the future
+//CONFIG_CDCACM_VENDORID=0x3185
+
+// 可行的
+//#define USBD_VID                      0x0483
+//#define USBD_PID                      22336 // 0x5740
+// 也可以的。Android端要反复插拔才行
+//#define USBD_VID                      0x3185
+//#define USBD_PID                      0x0035 // 0x5740
+//#define USBD_VID                      0x0483
+//#define USBD_PID                      0x5744
+
+#define USBD_VID                      0x0
+#define USBD_PID                      0x0
 #define USBD_LANGID_STRING            1033 // 0x409
 #define USBD_MANUFACTURER_STRING      "STMicroelectronics"
 #define USBD_PRODUCT_HS_STRING        "STM32 Virtual ComPort"

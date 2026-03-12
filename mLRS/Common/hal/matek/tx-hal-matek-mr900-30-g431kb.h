@@ -21,6 +21,8 @@
 // MATEKSYS mR900-30 STM32G431KB, as Tx module
 //-------------------------------------------------------
 
+#define MLRS_FEATURE_MATEK_TXMODULE_SIKTELEM
+
 #define DEVICE_HAS_JRPIN5
 #define DEVICE_HAS_IN_ON_JRPIN5_TX
 #define DEVICE_HAS_FAN_ONOFF // FAN_TEMPCONTROLLED_ONOFF was tested to work not so well

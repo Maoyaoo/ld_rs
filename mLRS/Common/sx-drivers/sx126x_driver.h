@@ -21,6 +21,9 @@
 #pragma once
 
 
+ #define SX_USE_CRYSTALOSCILLATOR
+ #define SX2_USE_CRYSTALOSCILLATOR
+
 //-------------------------------------------------------
 // SX Driver
 //-------------------------------------------------------
