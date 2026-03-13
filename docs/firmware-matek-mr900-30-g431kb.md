@@ -59,6 +59,33 @@ ARM_GNU_TOOLCHAIN=/opt/arm-gnu-toolchain-11.3.rel1-x86_64-arm-none-eabi \
   python3 tools/run_make_firmwares.py -t firmware-matek-mr900-30-g431kb -np
 ```
 
+3. 不改源码指定默认功率索引（编译时 `-D` 宏）
+说明
+1. 使用宏：`MLRS_MR90030_DEFAULT_POWER_IDX`
+2. 当前 mR900-30 索引映射：
+   `0=50mW, 1=100mW, 2=250mW, 3=500mW, 4=1000mW`
+
+示例
+```bash
+# 250mW
+ARM_GNU_TOOLCHAIN=/opt/arm-gnu-toolchain-11.3.rel1-x86_64-arm-none-eabi \
+  python3 tools/run_make_firmwares.py -t firmware-matek-mr900-30-g431kb \
+  -D MLRS_MR90030_DEFAULT_POWER_IDX=2 -np
+
+# 500mW
+ARM_GNU_TOOLCHAIN=/opt/arm-gnu-toolchain-11.3.rel1-x86_64-arm-none-eabi \
+  python3 tools/run_make_firmwares.py -t firmware-matek-mr900-30-g431kb \
+  -D MLRS_MR90030_DEFAULT_POWER_IDX=3 -np
+
+# 1000mW
+ARM_GNU_TOOLCHAIN=/opt/arm-gnu-toolchain-11.3.rel1-x86_64-arm-none-eabi \
+  python3 tools/run_make_firmwares.py -t firmware-matek-mr900-30-g431kb \
+  -D MLRS_MR90030_DEFAULT_POWER_IDX=4 -np
+```
+
+注意
+1. 每次编译会覆盖 `tools/build/firmware-matek-mr900-30-g431kb/` 下的同名产物，建议编完后立即重命名或复制保存。
+
 输出文件路径
 1. `tools/build/firmware-matek-mr900-30-g431kb/firmware-matek-mr900-30-g431kb-*.hex`
 2. `tools/build/firmware-matek-mr900-30-g431kb/firmware-matek-mr900-30-g431kb-*.bin`

@@ -105,7 +105,11 @@
 // 统一透明固件：默认 915 MHz / 19 Hz / 1 W
 #ifdef FIRMWARE_MATEK_MR900_30_G431KB
 #undef CPOWER
+#ifdef MLRS_MR90030_DEFAULT_POWER_IDX
+#define CPOWER MLRS_MR90030_DEFAULT_POWER_IDX
+#else
 #define CPOWER 4 // RFPOWER_LIST index for 30 dBm (1 W) on mR900-30
+#endif
 #undef SETUP_MODE
 #define SETUP_MODE MODE_19HZ
 #undef SETUP_RF_BAND
